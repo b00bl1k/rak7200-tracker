@@ -17,11 +17,14 @@
  * \endcode
  *
  * \author    Miguel Luis ( Semtech )
+ *
+ * \author    Alexey Ryabov
  */
 
 #include <stdio.h>
 #include "utilities.h"
 #include "board.h"
+#include "board-config.h"
 
 #include "Commissioning.h"
 #include "LmHandler.h"
@@ -199,13 +202,9 @@ static volatile uint8_t IsTxFramePending = 0;
 int main( void )
 {
     BoardInitMcu( );
-    BoardInitPeriph( );
-
-    printf( "RAK7200 LoRa Tracker\n" );
 
     if ( LmHandlerInit( &LmHandlerCallbacks, &LmHandlerParams ) != LORAMAC_HANDLER_SUCCESS )
     {
-        printf( "LoRaMac wasn't properly initialized\n" );
         // Fatal error, endless loop.
         while ( 1 )
         {
@@ -230,6 +229,8 @@ int main( void )
 
         // Process application uplinks management
         UplinkProcess( );
+
+        BoardProcess( );
 
         CRITICAL_SECTION_BEGIN( );
         if( IsMacProcessPending == 1 )

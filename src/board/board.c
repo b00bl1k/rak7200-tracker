@@ -19,20 +19,24 @@
  * \author    Miguel Luis ( Semtech )
  *
  * \author    Gregory Cristian ( Semtech )
+ *
+ * \author    Alexey Ryabov
  */
-#include "stm32l0xx.h"
-#include "utilities.h"
-#include "gpio.h"
+
+#include <stm32l0xx.h>
 #include "adc.h"
-#include "spi.h"
-#include "i2c.h"
-#include "uart.h"
-#include "timer.h"
+#include "board.h"
 #include "board-config.h"
+#include "delay.h"
+#include "gpio.h"
+#include "i2c.h"
 #include "lpm-board.h"
 #include "rtc-board.h"
+#include "spi.h"
 #include "sx1276-board.h"
-#include "board.h"
+#include "timer.h"
+#include "uart.h"
+#include "utilities.h"
 
 /*!
  * Unique Devices IDs register set ( STM32L0xxx )
@@ -57,6 +61,8 @@
  * Initializes the unused GPIO to a know status
  */
 static void BoardUnusedIoInit( void );
+
+static void BoardDeInitPeriph( void );
 
 /*!
  * System Clock Configuration
@@ -88,6 +94,13 @@ static bool McuInitialized = false;
  */
 static bool UsbIsConnected = false;
 
+/*!
+ * Flag to indicate if the SystemWakeupTime is Calibrated
+ */
+static volatile bool SystemWakeupTimeCalibrated = false;
+
+static volatile uint8_t IsChargeStatusChanged = 1;
+
 uint8_t Uart1TxBuffer[UART1_FIFO_TX_SIZE];
 uint8_t Uart1RxBuffer[UART1_FIFO_RX_SIZE];
 
@@ -106,19 +119,92 @@ Gpio_t LedBlue;
  */
 Uart_t Uart1;
 Uart_t Uart2;
+Adc_t Adc;
 
-/*!
- * Flag to indicate if the SystemWakeupTime is Calibrated
+/*
+ * GPS GPIO pin objects
  */
-static volatile bool SystemWakeupTimeCalibrated = false;
+Gpio_t LvlShifter;
+Gpio_t GpsReset;
+Gpio_t GpsPower;
+
+/*
+ * Stuff GPIO pin objects
+ */
+Gpio_t ChargeOut;
+Gpio_t ChargeIn;
 
 /*!
  * Callback indicating the end of the system wake-up time calibration
  */
-static void OnCalibrateSystemWakeupTimeTimerEvent( void* context )
+static void OnCalibrateSystemWakeupTimeTimerEvent( void *context )
 {
     RtcSetMcuWakeUpTime( );
     SystemWakeupTimeCalibrated = true;
+}
+
+static void OnChargeStatusChanged( void *context )
+{
+    IsChargeStatusChanged = 1;
+}
+
+static void CheckChargeStatus( void )
+{
+    uint16_t status1, status2;
+    bool usbStatus;
+
+    GpioInit( &ChargeIn, CHARGE_IN, PIN_ANALOGIC, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
+
+    GpioInit( &ChargeOut, CHARGE_OUT, PIN_OUTPUT, PIN_PUSH_PULL, PIN_NO_PULL, 1 );
+    DelayMs(10);
+    status1 = AdcReadChannel( &Adc, ADC_CHANNEL_9 );
+
+    GpioInit( &ChargeOut, CHARGE_OUT, PIN_ANALOGIC, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
+    DelayMs(10);
+    status2 = AdcReadChannel( &Adc, ADC_CHANNEL_9 );
+
+    // Revert pin configuration for external interrupts
+    GpioInit( &ChargeIn, CHARGE_IN, PIN_INPUT, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
+
+    if( status1 < 500 )
+    {
+        // Strong pull down - charge in progress
+        GpioWrite( &LedRed, 0 );
+        GpioWrite( &LedGreen, 1 );
+        usbStatus = true;
+    }
+    else
+    {
+        if( status2 < 500 )
+        {
+            // Weak pull-down - charge is complete
+            GpioWrite( &LedRed, 1 );
+            GpioWrite( &LedGreen, 0 );
+            usbStatus = true;
+        }
+        else
+        {
+            // UVLO state
+            GpioWrite( &LedRed, 1 );
+            GpioWrite( &LedGreen, 1 );
+            usbStatus = false;
+        }
+    }
+
+    if( UsbIsConnected != usbStatus )
+    {
+        UsbIsConnected = usbStatus;
+        if( UsbIsConnected )
+        {
+            BoardInitPeriph( );
+            LpmSetStopMode( LPM_APPLI_ID, LPM_DISABLE );
+        }
+        else
+        {
+            BoardDeInitPeriph( );
+            LpmSetStopMode( LPM_APPLI_ID, LPM_ENABLE );
+        }
+    }
 }
 
 void BoardCriticalSectionBegin( uint32_t *mask )
@@ -134,7 +220,16 @@ void BoardCriticalSectionEnd( uint32_t *mask )
 
 void BoardInitPeriph( void )
 {
+    FifoInit( &Uart1.FifoTx, Uart1TxBuffer, sizeof(Uart1TxBuffer) );
+    FifoInit( &Uart1.FifoRx, Uart1RxBuffer, sizeof(Uart1RxBuffer) );
 
+    UartInit( &Uart1, UART_1, UART1_TX, UART1_RX );
+    UartConfig( &Uart1, RX_TX, 115200, UART_8_BIT, UART_1_STOP_BIT, NO_PARITY, NO_FLOW_CTRL );
+}
+
+static void BoardDeInitPeriph( void )
+{
+    UartDeInit( &Uart1 );
 }
 
 void BoardInitMcu( void )
@@ -148,24 +243,19 @@ void BoardInitMcu( void )
         GpioInit( &LedGreen, LED_GREEN, PIN_OUTPUT, PIN_PUSH_PULL, PIN_NO_PULL, 1 );
         GpioInit( &LedBlue, LED_BLUE, PIN_OUTPUT, PIN_PUSH_PULL, PIN_NO_PULL, 1 );
 
+        GpioInit( &ChargeOut, CHARGE_OUT, PIN_ANALOGIC, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
+        GpioInit( &ChargeIn, CHARGE_IN, PIN_INPUT, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
+        GpioSetInterrupt( &ChargeIn, IRQ_RISING_FALLING_EDGE, IRQ_VERY_LOW_PRIORITY, OnChargeStatusChanged );
+
         SystemClockConfig( );
 
-        UsbIsConnected = true;
-
-        FifoInit( &Uart1.FifoTx, Uart1TxBuffer, sizeof(Uart1TxBuffer) );
-        FifoInit( &Uart1.FifoRx, Uart1RxBuffer, sizeof(Uart1RxBuffer) );
-
-        UartInit( &Uart1, UART_1, UART1_TX, UART1_RX );
-        UartConfig( &Uart1, RX_TX, 115200, UART_8_BIT, UART_1_STOP_BIT, NO_PARITY, NO_FLOW_CTRL );
-
         RtcInit( );
+        AdcInit(&Adc, NC);
 
         BoardUnusedIoInit( );
-        if( GetBoardPowerSource( ) == BATTERY_POWER )
-        {
-            // Disables OFF mode - Enables lowest power mode (STOP)
-            LpmSetOffMode( LPM_APPLI_ID, LPM_DISABLE );
-        }
+
+        // Disables OFF mode - Enables lowest power mode (STOP)
+        LpmSetOffMode( LPM_APPLI_ID, LPM_DISABLE );
     }
     else
     {
@@ -186,6 +276,20 @@ void BoardInitMcu( void )
         {
             CalibrateSystemWakeupTime( );
         }
+    }
+}
+
+void BoardProcess( void )
+{
+    uint8_t isNeedCheckChargeStatus;
+    CRITICAL_SECTION_BEGIN( );
+    isNeedCheckChargeStatus = IsChargeStatusChanged;
+    IsChargeStatusChanged = 0;
+    CRITICAL_SECTION_END( );
+
+    if( isNeedCheckChargeStatus == 1 )
+    {
+        CheckChargeStatus( );
     }
 }
 

@@ -100,6 +100,8 @@ extern Gpio_t LedBlue;
 extern Uart_t Uart1;
 extern Uart_t Uart2;
 
+void BoardProcess( void );
+
 #ifdef __cplusplus
 }
 #endif
