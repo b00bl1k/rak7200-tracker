@@ -49,9 +49,9 @@ extern "C"
 /*!
  * Board MCU pins definitions
  */
-#define LED_GREEN PA_8
 #define LED_RED PA_11
-#define LED_BLUE PA_12
+#define LED_GREEN PA_12
+#define LED_BLUE PA_8
 #define UART1_TX PA_9
 #define UART1_RX PA_10
 #define UART2_TX PC_10
@@ -90,8 +90,8 @@ extern "C"
 #define I2C_SCL PB_8
 #define I2C_SDA PB_9
 
-extern Gpio_t LedGreen;
 extern Gpio_t LedRed;
+extern Gpio_t LedGreen;
 extern Gpio_t LedBlue;
 
 /*

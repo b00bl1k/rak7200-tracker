@@ -189,7 +189,15 @@ void UartMcuConfig( Uart_t *obj, UartMode_t mode, uint32_t baudrate, WordLength_
 
 void UartMcuDeInit( Uart_t *obj )
 {
+    UART_HandleTypeDef *uartHandle;
 
+    if (obj->UartId != UART_1 && obj->UartId != UART_2)
+    {
+        assert_param(false);
+    }
+
+    uartHandle = &McuUarts[obj->UartId].handle;
+    HAL_UART_DeInit(uartHandle);
 }
 
 uint8_t UartMcuPutChar( Uart_t *obj, uint8_t data )

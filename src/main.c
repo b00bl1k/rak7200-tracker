@@ -25,6 +25,10 @@
 #include "utilities.h"
 #include "board.h"
 #include "board-config.h"
+#include "lpm-board.h"
+#include "gps.h"
+#include "systime.h"
+#include "timer.h"
 
 #include "Commissioning.h"
 #include "LmHandler.h"
@@ -92,6 +96,8 @@
  */
 #define LORAWAN_APP_PORT                            2
 
+#define GPS_TIMER_TIMEOUT                           (3 * 60 * 1000)
+
 /*!
  *
  */
@@ -116,10 +122,7 @@ static LmHandlerAppData_t AppData =
     .Port = 0
 };
 
-/*!
- * Specifies the state of the application LED
- */
-static bool AppLedStateOn = false;
+static float AppGpsTime;
 
 /*!
  * Timer to handle the application data transmission duty cycle
@@ -196,12 +199,27 @@ static volatile uint8_t IsMacProcessPending = 0;
 
 static volatile uint8_t IsTxFramePending = 0;
 
+static volatile uint8_t IsGpsTimeout = 0;
+
+static volatile uint8_t IsJoinComplete = 0;
+
+static TimerEvent_t GpsTimer;
+
+static void OnGpsTimerTimeoutEvent( void *context )
+{
+    IsGpsTimeout = 1;
+}
+
 /*!
  * Main application entry point.
  */
 int main( void )
 {
     BoardInitMcu( );
+    GpsInit( );
+
+    TimerInit( &GpsTimer, OnGpsTimerTimeoutEvent );
+    TimerSetValue( &GpsTimer, GPS_TIMER_TIMEOUT );
 
     if ( LmHandlerInit( &LmHandlerCallbacks, &LmHandlerParams ) != LORAMAC_HANDLER_SUCCESS )
     {
@@ -217,8 +235,6 @@ int main( void )
     // The LoRa-Alliance Compliance protocol package should always be
     // initialized and activated.
     LmHandlerPackageRegister( PACKAGE_ID_COMPLIANCE, &LmhpComplianceParams );
-
-    LmHandlerJoin( );
 
     StartTxProcess( LORAMAC_HANDLER_TX_ON_TIMER );
 
@@ -270,18 +286,16 @@ static void OnMacMlmeRequest( LoRaMacStatus_t status, MlmeReq_t *mlmeReq, TimerT
 
 static void OnJoinRequest( LmHandlerJoinParams_t* params )
 {
-    if( params->Status == LORAMAC_HANDLER_ERROR )
-    {
-        LmHandlerJoin( );
-    }
-    else
+    if( params->Status == LORAMAC_HANDLER_SUCCESS )
     {
         LmHandlerRequestClass( LORAWAN_DEFAULT_CLASS );
     }
+    IsJoinComplete = 1;
 }
 
 static void OnTxData( LmHandlerTxParams_t* params )
 {
+    GpioWrite( &LedBlue, 1 );
 }
 
 static void OnRxData( LmHandlerAppData_t* appData, LmHandlerRxParams_t* params )
@@ -344,13 +358,28 @@ static void PrepareTxFrame( void )
     AppData.Port = LORAWAN_APP_PORT;
 
     CayenneLppReset( );
-    CayenneLppAddDigitalInput( channel++, AppLedStateOn );
-    CayenneLppAddAnalogInput( channel++, BoardGetBatteryLevel( ) * 100 / 254 );
+    CayenneLppAddDigitalInput( channel++, 0 );
+
+    if( GpsHasFix( ) == true )
+    {
+        double latitude = 0, longitude = 0;
+        uint16_t altitudeGps = 0xFFFF;
+
+        GpsGetLatestGpsPositionDouble( &latitude, &longitude );
+        altitudeGps = GpsGetLatestGpsAltitude( ); // in m
+
+        CayenneLppAddGps( channel++, latitude, longitude, altitudeGps );
+
+        CayenneLppAddAnalogInput( channel++, AppGpsTime );
+    }
 
     CayenneLppCopy( AppData.Buffer );
     AppData.BufferSize = CayenneLppGetSize( );
 
-    LmHandlerSend( &AppData, LORAWAN_DEFAULT_CONFIRMED_MSG_STATE );
+    if ( LmHandlerSend( &AppData, LORAWAN_DEFAULT_CONFIRMED_MSG_STATE ) == LORAMAC_HANDLER_SUCCESS )
+    {
+        GpioWrite( &LedBlue, 0 );
+    }
 }
 
 static void StartTxProcess( LmHandlerTxEvents_t txEvent )
@@ -376,14 +405,91 @@ static void StartTxProcess( LmHandlerTxEvents_t txEvent )
 
 static void UplinkProcess( void )
 {
-    uint8_t isPending = 0;
-    CRITICAL_SECTION_BEGIN( );
-    isPending = IsTxFramePending;
-    IsTxFramePending = 0;
-    CRITICAL_SECTION_END( );
-    if( isPending == 1 )
+    static enum UplinkState
     {
-        PrepareTxFrame( );
+        STATE_IDLE,
+        STATE_WAIT_LOCATION,
+        STATE_WAIT_JOIN,
+    } state;
+    static SysTime_t gpsTimeStart;
+
+    uint8_t isTxPending = 0;
+    uint8_t isGpsTimeout = 0;
+    uint8_t isJoinComplete = 0;
+
+    CRITICAL_SECTION_BEGIN( );
+    isTxPending = IsTxFramePending;
+    IsTxFramePending = 0;
+    isGpsTimeout = IsGpsTimeout;
+    IsGpsTimeout = 0;
+    isJoinComplete = IsJoinComplete;
+    IsJoinComplete = 0;
+    CRITICAL_SECTION_END( );
+
+    if( isTxPending == 1 && state == STATE_IDLE )
+    {
+        LpmSetStopMode( LPM_GPS_ID, LPM_DISABLE );
+        printf( "Start GPS (timeout %d seconds)\r\n", GPS_TIMER_TIMEOUT / 1000 );
+        GpsResetPosition( );
+        GpsStart( );
+        TimerStart( &GpsTimer );
+        gpsTimeStart = SysTimeGetMcuTime( );
+        state = STATE_WAIT_LOCATION;
+    }
+
+    switch( state )
+    {
+    case STATE_IDLE:
+        break;
+
+    case STATE_WAIT_LOCATION:
+        if( GpsHasFix() )
+        {
+            SysTime_t gpsTimeEnd = SysTimeGetMcuTime( );
+            AppGpsTime = ( gpsTimeEnd.Seconds - gpsTimeStart.Seconds ) / 100.0;
+            printf( "GPS has location\r\n" );
+        }
+        else if( isGpsTimeout )
+        {
+            printf( "GPS time is out\r\n" );
+        }
+        else
+        {
+            break;
+        }
+
+        TimerStop( &GpsTimer );
+        GpsStop( );
+        LpmSetStopMode( LPM_GPS_ID, LPM_ENABLE );
+        if( LmHandlerJoinStatus( ) != LORAMAC_HANDLER_SET )
+        {
+            printf( "Join to network...\r\n" );
+            LmHandlerJoin();
+            state = STATE_WAIT_JOIN;
+        }
+        else
+        {
+            printf( "Send frame\r\n" );
+            PrepareTxFrame( );
+            state = STATE_IDLE;
+        }
+        break;
+    
+    case STATE_WAIT_JOIN:
+        if( isJoinComplete == 1 )
+        {
+            if( LmHandlerJoinStatus( ) != LORAMAC_HANDLER_SET )
+            {
+                printf( "Failed\r\n" );
+            }
+            else
+            {
+                printf( "Joined! Send frame\r\n" );
+                PrepareTxFrame( );
+            }
+            state = STATE_IDLE;
+        }
+        break;
     }
 }
 

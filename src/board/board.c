@@ -58,6 +58,18 @@
 #define UART2_FIFO_RX_SIZE 1024
 
 /*!
+ * Battery thresholds
+ */
+#define BATTERY_MAX_LEVEL       3000  // mV
+#define BATTERY_MIN_LEVEL       2400  // mV
+#define BATTERY_SHUTDOWN_LEVEL  2300  // mV
+
+#define BATTERY_LORAWAN_UNKNOWN_LEVEL   255
+#define BATTERY_LORAWAN_MAX_LEVEL       254
+#define BATTERY_LORAWAN_MIN_LEVEL       1
+#define BATTERY_LORAWAN_EXT_PWR         0
+
+/*!
  * Initializes the unused GPIO to a know status
  */
 static void BoardUnusedIoInit( void );
@@ -99,6 +111,8 @@ static bool UsbIsConnected = false;
  */
 static volatile bool SystemWakeupTimeCalibrated = false;
 
+static uint16_t BatteryVoltage = BATTERY_MAX_LEVEL;
+
 static volatile uint8_t IsChargeStatusChanged = 1;
 
 uint8_t Uart1TxBuffer[UART1_FIFO_TX_SIZE];
@@ -110,8 +124,8 @@ uint8_t Uart2RxBuffer[UART2_FIFO_RX_SIZE];
 /*!
  * LED GPIO pins objects
  */
-Gpio_t LedGreen;
 Gpio_t LedRed;
+Gpio_t LedGreen;
 Gpio_t LedBlue;
 
 /*
@@ -120,13 +134,6 @@ Gpio_t LedBlue;
 Uart_t Uart1;
 Uart_t Uart2;
 Adc_t Adc;
-
-/*
- * GPS GPIO pin objects
- */
-Gpio_t LvlShifter;
-Gpio_t GpsReset;
-Gpio_t GpsPower;
 
 /*
  * Stuff GPIO pin objects
@@ -220,9 +227,6 @@ void BoardCriticalSectionEnd( uint32_t *mask )
 
 void BoardInitPeriph( void )
 {
-    FifoInit( &Uart1.FifoTx, Uart1TxBuffer, sizeof(Uart1TxBuffer) );
-    FifoInit( &Uart1.FifoRx, Uart1RxBuffer, sizeof(Uart1RxBuffer) );
-
     UartInit( &Uart1, UART_1, UART1_TX, UART1_RX );
     UartConfig( &Uart1, RX_TX, 115200, UART_8_BIT, UART_1_STOP_BIT, NO_PARITY, NO_FLOW_CTRL );
 }
@@ -251,6 +255,12 @@ void BoardInitMcu( void )
 
         RtcInit( );
         AdcInit(&Adc, NC);
+        
+        FifoInit( &Uart1.FifoTx, Uart1TxBuffer, sizeof( Uart1TxBuffer ) );
+        FifoInit( &Uart1.FifoRx, Uart1RxBuffer, sizeof( Uart1RxBuffer ) );
+        
+        FifoInit( &Uart2.FifoTx, Uart2TxBuffer, sizeof( Uart2TxBuffer ) );
+        FifoInit( &Uart2.FifoRx, Uart2RxBuffer, sizeof( Uart2RxBuffer ) );
 
         BoardUnusedIoInit( );
 
@@ -331,12 +341,40 @@ uint16_t BoardBatteryMeasureVoltage( void )
 
 uint32_t BoardGetBatteryVoltage( void )
 {
-    return 0;
+    return BatteryVoltage;
 }
 
 uint8_t BoardGetBatteryLevel( void )
 {
-    return 0;
+    uint8_t batteryLevel = 0;
+
+    BatteryVoltage = BoardBatteryMeasureVoltage( );
+
+    if( GetBoardPowerSource( ) == USB_POWER )
+    {
+        batteryLevel = BATTERY_LORAWAN_EXT_PWR;
+    }
+    else
+    {
+        if( BatteryVoltage >= BATTERY_MAX_LEVEL )
+        {
+            batteryLevel = BATTERY_LORAWAN_MAX_LEVEL;
+        }
+        else if( ( BatteryVoltage > BATTERY_MIN_LEVEL ) && ( BatteryVoltage < BATTERY_MAX_LEVEL ) )
+        {
+            batteryLevel =
+                ( ( 253 * ( BatteryVoltage - BATTERY_MIN_LEVEL ) ) / ( BATTERY_MAX_LEVEL - BATTERY_MIN_LEVEL ) ) + 1;
+        }
+        else if( ( BatteryVoltage > BATTERY_SHUTDOWN_LEVEL ) && ( BatteryVoltage <= BATTERY_MIN_LEVEL ) )
+        {
+            batteryLevel = 1;
+        }
+        else  // if( BatteryVoltage <= BATTERY_SHUTDOWN_LEVEL )
+        {
+            batteryLevel = BATTERY_LORAWAN_UNKNOWN_LEVEL;
+        }
+    }
+    return batteryLevel;
 }
 
 static void BoardUnusedIoInit( void )
