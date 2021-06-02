@@ -82,19 +82,9 @@ static void BoardDeInitPeriph( void );
 static void SystemClockConfig( void );
 
 /*!
- * Used to measure and calibrate the system wake-up time from STOP mode
- */
-static void CalibrateSystemWakeupTime( void );
-
-/*!
  * System Clock Re-Configuration when waking up from STOP mode
  */
 static void SystemClockReConfig( void );
-
-/*!
- * Timer used at first boot to calibrate the SystemWakeupTime
- */
-static TimerEvent_t CalibrateSystemWakeupTimeTimer;
 
 /*!
  * Flag to indicate if the MCU is Initialized
@@ -105,11 +95,6 @@ static bool McuInitialized = false;
  * Flag used to indicate if board is powered from the USB
  */
 static bool UsbIsConnected = false;
-
-/*!
- * Flag to indicate if the SystemWakeupTime is Calibrated
- */
-static volatile bool SystemWakeupTimeCalibrated = false;
 
 static uint16_t BatteryVoltage = BATTERY_MAX_LEVEL;
 
@@ -140,15 +125,6 @@ Adc_t Adc;
  */
 Gpio_t ChargeOut;
 Gpio_t ChargeIn;
-
-/*!
- * Callback indicating the end of the system wake-up time calibration
- */
-static void OnCalibrateSystemWakeupTimeTimerEvent( void *context )
-{
-    RtcSetMcuWakeUpTime( );
-    SystemWakeupTimeCalibrated = true;
-}
 
 static void OnChargeStatusChanged( void *context )
 {
@@ -281,11 +257,6 @@ void BoardInitMcu( void )
 
         SX1276IoDbgInit( );
         SX1276IoTcxoInit( );
-
-        if( GetBoardPowerSource( ) == BATTERY_POWER )
-        {
-            CalibrateSystemWakeupTime( );
-        }
     }
 }
 
@@ -433,20 +404,6 @@ void SystemClockConfig( void )
     HAL_NVIC_SetPriority( SysTick_IRQn, 0, 0 );
 }
 
-void CalibrateSystemWakeupTime( void )
-{
-    if( SystemWakeupTimeCalibrated == false )
-    {
-        TimerInit( &CalibrateSystemWakeupTimeTimer, OnCalibrateSystemWakeupTimeTimerEvent );
-        TimerSetValue( &CalibrateSystemWakeupTimeTimer, 1000 );
-        TimerStart( &CalibrateSystemWakeupTimeTimer );
-        while( SystemWakeupTimeCalibrated == false )
-        {
-
-        }
-    }
-}
-
 void SystemClockReConfig( void )
 {
     __HAL_RCC_PWR_CLK_ENABLE( );
@@ -568,7 +525,8 @@ void BoardLowPowerHandler( void )
  */
 int _write( int fd, const void *buf, size_t count )
 {
-    while( UartPutBuffer( &Uart1, ( uint8_t* )buf, ( uint16_t )count ) != 0 ){ };
+    if (Uart1.IsInitialized)
+        UartPutBuffer( &Uart1, ( uint8_t* )buf, ( uint16_t )count );
     return count;
 }
 

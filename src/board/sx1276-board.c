@@ -314,6 +314,11 @@ bool SX1276CheckRfFrequency( uint32_t frequency )
     return true;
 }
 
+uint32_t SX1276GetDio1PinState( void )
+{
+    return GpioRead( &SX1276.DIO1 );
+}
+
 #if defined( USE_RADIO_DEBUG )
 void SX1276DbgPinTxWrite( uint8_t state )
 {

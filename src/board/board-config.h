@@ -102,6 +102,8 @@ extern Uart_t Uart2;
 
 void BoardProcess( void );
 
+uint8_t GpsMcuIsDataParsed( void );
+
 #ifdef __cplusplus
 }
 #endif

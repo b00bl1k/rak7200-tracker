@@ -43,6 +43,8 @@
 
 #endif
 
+#define FIRMWARE_VERSION                            0x01000000 // 1.0.0.0
+
 /*!
  * LoRaWAN default end-device class
  */
@@ -96,7 +98,7 @@
  */
 #define LORAWAN_APP_PORT                            2
 
-#define GPS_TIMER_TIMEOUT                           (3 * 60 * 1000)
+#define GPS_TIMER_TIMEOUT                           (3 * 30 * 1000)
 
 /*!
  *
@@ -111,6 +113,34 @@ typedef enum
  * User application data
  */
 static uint8_t AppDataBuffer[LORAWAN_APP_DATA_BUFFER_MAX_SIZE];
+
+static void OnMacProcessNotify( void );
+static void OnNvmDataChange( LmHandlerNvmContextStates_t state, uint16_t size );
+static void OnNetworkParametersChange( CommissioningParams_t* params );
+static void OnMacMcpsRequest( LoRaMacStatus_t status, McpsReq_t *mcpsReq, TimerTime_t nextTxIn );
+static void OnMacMlmeRequest( LoRaMacStatus_t status, MlmeReq_t *mlmeReq, TimerTime_t nextTxIn );
+static void OnJoinRequest( LmHandlerJoinParams_t* params );
+static void OnTxData( LmHandlerTxParams_t* params );
+static void OnRxData( LmHandlerAppData_t* appData, LmHandlerRxParams_t* params );
+static void OnClassChange( DeviceClass_t deviceClass );
+static void OnBeaconStatusChange( LoRaMacHandlerBeaconParams_t* params );
+#if( LMH_SYS_TIME_UPDATE_NEW_API == 1 )
+static void OnSysTimeUpdate( bool isSynchronized, int32_t timeCorrection );
+#else
+static void OnSysTimeUpdate( void );
+#endif
+static void PrepareTxFrame( void );
+static void StartTxProcess( LmHandlerTxEvents_t txEvent );
+static void UplinkProcess( void );
+
+static void OnTxPeriodicityChanged( uint32_t periodicity );
+static void OnTxFrameCtrlChanged( LmHandlerMsgTypes_t isTxConfirmed );
+static void OnPingSlotPeriodicityChanged( uint8_t pingSlotPeriodicity );
+
+/*!
+ * Function executed on TxTimer event
+ */
+static void OnTxTimerEvent( void* context );
 
 /*!
  * User application data structure
@@ -129,37 +159,13 @@ static float AppGpsTime;
  */
 static TimerEvent_t TxTimer;
 
-static void OnMacProcessNotify( void );
-static void OnNvmContextChange( LmHandlerNvmContextStates_t state );
-static void OnNetworkParametersChange( CommissioningParams_t* params );
-static void OnMacMcpsRequest( LoRaMacStatus_t status, McpsReq_t *mcpsReq, TimerTime_t nextTxIn );
-static void OnMacMlmeRequest( LoRaMacStatus_t status, MlmeReq_t *mlmeReq, TimerTime_t nextTxIn );
-static void OnJoinRequest( LmHandlerJoinParams_t* params );
-static void OnTxData( LmHandlerTxParams_t* params );
-static void OnRxData( LmHandlerAppData_t* appData, LmHandlerRxParams_t* params );
-static void OnClassChange( DeviceClass_t deviceClass );
-static void OnBeaconStatusChange( LoRaMAcHandlerBeaconParams_t* params );
-#if( LMH_SYS_TIME_UPDATE_NEW_API == 1 )
-static void OnSysTimeUpdate( bool isSynchronized, int32_t timeCorrection );
-#else
-static void OnSysTimeUpdate( void );
-#endif
-static void PrepareTxFrame( void );
-static void StartTxProcess( LmHandlerTxEvents_t txEvent );
-static void UplinkProcess( void );
-
-/*!
- * Function executed on TxTimer event
- */
-static void OnTxTimerEvent( void* context );
-
 static LmHandlerCallbacks_t LmHandlerCallbacks =
 {
     .GetBatteryLevel = BoardGetBatteryLevel,
     .GetTemperature = NULL,
     .GetRandomSeed = BoardGetRandomSeed,
     .OnMacProcess = OnMacProcessNotify,
-    .OnNvmContextChange = OnNvmContextChange,
+    .OnNvmDataChange = OnNvmDataChange,
     .OnNetworkParametersChange = OnNetworkParametersChange,
     .OnMacMcpsRequest = OnMacMcpsRequest,
     .OnMacMlmeRequest = OnMacMlmeRequest,
@@ -184,10 +190,10 @@ static LmHandlerParams_t LmHandlerParams =
 
 static LmhpComplianceParams_t LmhpComplianceParams =
 {
-    .AdrEnabled = LORAWAN_ADR_STATE,
-    .DutyCycleEnabled = LORAWAN_DUTYCYCLE_ON,
-    .StopPeripherals = NULL,
-    .StartPeripherals = NULL,
+    .FwVersion.Value = FIRMWARE_VERSION,
+    .OnTxPeriodicityChanged = OnTxPeriodicityChanged,
+    .OnTxFrameCtrlChanged = OnTxFrameCtrlChanged,
+    .OnPingSlotPeriodicityChanged = OnPingSlotPeriodicityChanged,
 };
 
 /*!
@@ -198,6 +204,8 @@ static LmhpComplianceParams_t LmhpComplianceParams =
 static volatile uint8_t IsMacProcessPending = 0;
 
 static volatile uint8_t IsTxFramePending = 0;
+
+static volatile uint32_t TxPeriodicity = 0;
 
 static volatile uint8_t IsGpsTimeout = 0;
 
@@ -220,6 +228,9 @@ int main( void )
 
     TimerInit( &GpsTimer, OnGpsTimerTimeoutEvent );
     TimerSetValue( &GpsTimer, GPS_TIMER_TIMEOUT );
+
+    // Initialize transmission periodicity variable
+    TxPeriodicity = APP_TX_DUTYCYCLE + randr( -APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND );
 
     if ( LmHandlerInit( &LmHandlerCallbacks, &LmHandlerParams ) != LORAMAC_HANDLER_SUCCESS )
     {
@@ -268,7 +279,7 @@ static void OnMacProcessNotify( void )
     IsMacProcessPending = 1;
 }
 
-static void OnNvmContextChange( LmHandlerNvmContextStates_t state )
+static void OnNvmDataChange( LmHandlerNvmContextStates_t state, uint16_t size )
 {
 }
 
@@ -319,7 +330,7 @@ static void OnClassChange( DeviceClass_t deviceClass )
     LmHandlerSend( &appData, LORAMAC_HANDLER_UNCONFIRMED_MSG );
 }
 
-static void OnBeaconStatusChange( LoRaMAcHandlerBeaconParams_t* params )
+static void OnBeaconStatusChange( LoRaMacHandlerBeaconParams_t* params )
 {
     switch( params->State )
     {
@@ -392,7 +403,7 @@ static void StartTxProcess( LmHandlerTxEvents_t txEvent )
         {
             // Schedule 1st packet transmission
             TimerInit( &TxTimer, OnTxTimerEvent );
-            TimerSetValue( &TxTimer, APP_TX_DUTYCYCLE  + randr( -APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND ) );
+            TimerSetValue( &TxTimer, TxPeriodicity );
             OnTxTimerEvent( NULL );
         }
             break;
@@ -430,7 +441,7 @@ static void UplinkProcess( void )
     {
         LpmSetStopMode( LPM_GPS_ID, LPM_DISABLE );
         printf( "Start GPS (timeout %d seconds)\r\n", GPS_TIMER_TIMEOUT / 1000 );
-        GpsResetPosition( );
+        GpsMcuIsDataParsed( ); // reset flag
         GpsStart( );
         TimerStart( &GpsTimer );
         gpsTimeStart = SysTimeGetMcuTime( );
@@ -443,11 +454,11 @@ static void UplinkProcess( void )
         break;
 
     case STATE_WAIT_LOCATION:
-        if( GpsHasFix() )
+        if( GpsMcuIsDataParsed( ) && GpsHasFix( ) )
         {
             SysTime_t gpsTimeEnd = SysTimeGetMcuTime( );
-            AppGpsTime = ( gpsTimeEnd.Seconds - gpsTimeStart.Seconds ) / 100.0;
-            printf( "GPS has location\r\n" );
+            AppGpsTime = ( gpsTimeEnd.Seconds - gpsTimeStart.Seconds );
+            printf( "GPS has location %f sec\r\n", AppGpsTime );
         }
         else if( isGpsTimeout )
         {
@@ -493,6 +504,31 @@ static void UplinkProcess( void )
     }
 }
 
+static void OnTxPeriodicityChanged( uint32_t periodicity )
+{
+    TxPeriodicity = periodicity;
+
+    if( TxPeriodicity == 0 )
+    { // Revert to application default periodicity
+        TxPeriodicity = APP_TX_DUTYCYCLE + randr( -APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND );
+    }
+
+    // Update timer periodicity
+    TimerStop( &TxTimer );
+    TimerSetValue( &TxTimer, TxPeriodicity );
+    TimerStart( &TxTimer );
+}
+
+static void OnTxFrameCtrlChanged( LmHandlerMsgTypes_t isTxConfirmed )
+{
+    LmHandlerParams.IsTxConfirmed = isTxConfirmed;
+}
+
+static void OnPingSlotPeriodicityChanged( uint8_t pingSlotPeriodicity )
+{
+    LmHandlerParams.PingSlotPeriodicity = pingSlotPeriodicity;
+}
+
 /*!
  * Function executed on TxTimer event
  */
@@ -503,6 +539,6 @@ static void OnTxTimerEvent( void* context )
     IsTxFramePending = 1;
 
     // Schedule next transmission
-    TimerSetValue( &TxTimer, APP_TX_DUTYCYCLE + randr( -APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND ) );
+    TimerSetValue( &TxTimer, TxPeriodicity );
     TimerStart( &TxTimer );
 }

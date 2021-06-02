@@ -25,6 +25,7 @@
 
 #include <string.h>
 
+#include "board.h"
 #include "delay.h"
 #include "gpio.h"
 #include "gps.h"
@@ -56,6 +57,7 @@ static uint8_t NmeaString[128];
  */
 static volatile uint8_t NmeaStringSize = 0;
 
+static volatile bool IsGpsDataParsed;
 
 static bool GpsSendCommand( char *cmd )
 {
@@ -93,7 +95,7 @@ void GpsMcuStart( void )
     {
         "@VER\r\n",
         "@WUP\r\n",
-        "@BSSL 5\r\n",
+        "@BSSL 1\r\n",
         "@GSOP 1 1000 0\r\n",
         "@GNS 3\r\n",
         "@GSP\r\n",
@@ -155,8 +157,21 @@ void GpsUartIrqNotify( UartNotifyId_t id )
             if( data == '\n' )
             {
                 NmeaString[NmeaStringSize++] = '\0';
-                GpsParseGpsData( ( int8_t * )NmeaString, NmeaStringSize );
+                if ( GpsParseGpsData( ( int8_t * )NmeaString, NmeaStringSize ) )
+                    IsGpsDataParsed = 1;
             }
         }
     }
+}
+
+uint8_t GpsMcuIsDataParsed()
+{
+    uint8_t isDataParsed;
+
+    CRITICAL_SECTION_BEGIN( );
+    isDataParsed = IsGpsDataParsed;
+    IsGpsDataParsed = 0;
+    CRITICAL_SECTION_END( );
+
+    return isDataParsed;    
 }

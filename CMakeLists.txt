@@ -21,7 +21,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/board)
 
 list(APPEND ${PROJECT_NAME}_COMMON
         "${LORAMAC_DIR}/src/apps/LoRaMac/common/CayenneLpp.c"
-        "${LORAMAC_DIR}/src/apps/LoRaMac/common/NvmCtxMgmt.c"
+        "${LORAMAC_DIR}/src/apps/LoRaMac/common/NvmDataMgmt.c"
         )
 
 list(APPEND ${PROJECT_NAME}_LMH
