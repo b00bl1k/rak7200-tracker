@@ -59,12 +59,12 @@ static volatile uint8_t NmeaStringSize = 0;
 
 static volatile bool IsGpsDataParsed;
 
-static bool GpsSendCommand( char *cmd )
+static bool GpsSendCommand( char *cmd, uint32_t delay )
 {
     char *ok;
 
     UartPutBuffer( &Uart2, ( uint8_t * )cmd, strlen( cmd ) );
-    DelayMs(400);
+    DelayMs(delay);
     UartGetBuffer( &Uart2, ( uint8_t * )GpsRxBuf, sizeof( GpsRxBuf ) - 1, &GpsRxSize );
     GpsRxBuf[GpsRxSize] = '\0';
     ok = strstr( GpsRxBuf, "Done" );
@@ -91,6 +91,7 @@ void GpsMcuInit( void )
 
 void GpsMcuStart( void )
 {
+    const uint32_t delay = 400; // ms
     char *commands[] =
     {
         "@VER\r\n",
@@ -116,7 +117,7 @@ void GpsMcuStart( void )
 
     for( uint32_t i = 0; i < sizeof( commands ) / sizeof( commands[0] ); i++ )
     {
-        if( GpsSendCommand( commands[i] ) )
+        if( GpsSendCommand( commands[i], delay ) )
             GpsStatus |= 1 << i;
     }
 
@@ -125,9 +126,13 @@ void GpsMcuStart( void )
 
 void GpsMcuStop( void )
 {
+    uint32_t delay = 400; // ms
     Uart2.IrqNotify = NULL;
 
-    if( GpsSendCommand( "@GSTP\r\n" ) )
+    if( GpsSendCommand( "@GSTP\r\n", delay ) )
+        GpsStatus |= 0x4000;
+    delay = 1000;
+    if( GpsSendCommand( "@BUP\r\n", delay ) )
         GpsStatus |= 0x8000;
     GpioWrite( &GpsPowerEn, 0 );
 
