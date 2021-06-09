@@ -26,6 +26,8 @@
 #include "board-config.h"
 #include "adc-board.h"
 
+#define ADC_CONVERSTION_TIMEOUT 0x1000
+
 ADC_HandleTypeDef AdcHandle;
 
 void AdcMcuInit( Adc_t *obj, PinNames adcInput )
@@ -65,15 +67,12 @@ void AdcMcuConfig( void )
 
     // Calibration
     HAL_ADCEx_Calibration_Start( &AdcHandle, ADC_SINGLE_ENDED );
-
 }
 
 uint16_t AdcMcuReadChannel( Adc_t *obj, uint32_t channel )
 {
     ADC_ChannelConfTypeDef adcConf = { 0 };
     uint16_t adcData = 0;
-    uint32_t tickStart = 0;
-    bool isAdcReady = true;
 
     // Enable HSI
     __HAL_RCC_HSI_ENABLE( );
@@ -94,36 +93,16 @@ uint16_t AdcMcuReadChannel( Adc_t *obj, uint32_t channel )
     adcConf.Rank = ADC_RANK_CHANNEL_NUMBER;
     HAL_ADC_ConfigChannel( &AdcHandle, &adcConf );
 
-    // Enable ADC1
-    __HAL_ADC_ENABLE( &AdcHandle );
-
-    // Wait for ADC to effectively be enabled
-    tickStart = HAL_GetTick( );
-    while( __HAL_ADC_GET_FLAG( &AdcHandle, ADC_FLAG_RDY ) == RESET )
+    if( HAL_ADC_Start( &AdcHandle ) == HAL_OK ) 
     {
-        if( ( HAL_GetTick( ) - tickStart ) > ADC_ENABLE_TIMEOUT )
+        if( HAL_ADC_PollForConversion( &AdcHandle, ADC_CONVERSTION_TIMEOUT ) == HAL_OK )
         {
-            isAdcReady = false;
-            break;
+            adcData = HAL_ADC_GetValue( &AdcHandle );
         }
+
+        HAL_ADC_Stop( &AdcHandle );
     }
 
-    if( isAdcReady != false )
-    {
-        // Start ADC Software Conversion
-        HAL_ADC_Start( &AdcHandle );
-
-        HAL_ADC_PollForConversion( &AdcHandle, HAL_MAX_DELAY );
-
-        adcData = HAL_ADC_GetValue( &AdcHandle );
-    }
-
-    __HAL_ADC_DISABLE( &AdcHandle );
-
-    if( ( adcConf.Channel == ADC_CHANNEL_TEMPSENSOR ) || ( adcConf.Channel == ADC_CHANNEL_VREFINT ) )
-    {
-        HAL_ADC_DeInit( &AdcHandle );
-    }
     __HAL_RCC_ADC1_CLK_DISABLE( );
 
     // Disable HSI

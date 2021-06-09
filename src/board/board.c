@@ -60,7 +60,7 @@
 /*!
  * Battery thresholds
  */
-#define BATTERY_MAX_LEVEL       3000  // mV
+#define BATTERY_MAX_LEVEL       4200  // mV
 #define BATTERY_MIN_LEVEL       2400  // mV
 #define BATTERY_SHUTDOWN_LEVEL  2300  // mV
 
@@ -68,6 +68,21 @@
 #define BATTERY_LORAWAN_MAX_LEVEL       254
 #define BATTERY_LORAWAN_MIN_LEVEL       1
 #define BATTERY_LORAWAN_EXT_PWR         0
+
+/*!
+ * Factory power supply
+ */
+#define VDDA_VREFINT_CAL ( ( uint32_t ) 3000 )  // mV
+
+/*!
+ * VREF calibration value
+ */
+#define VREFINT_CAL ( *( uint16_t* ) ( ( uint32_t ) 0x1FF80078 ) )
+
+/*!
+ * ADC maximum value
+ */
+#define ADC_MAX_VALUE                   4095
 
 /*!
  * Initializes the unused GPIO to a know status
@@ -214,6 +229,8 @@ static void BoardDeInitPeriph( void )
 
 void BoardInitMcu( void )
 {
+    Gpio_t ioPin;
+
     if( McuInitialized == false )
     {
         HAL_Init( );
@@ -226,6 +243,8 @@ void BoardInitMcu( void )
         GpioInit( &ChargeOut, CHARGE_OUT, PIN_ANALOGIC, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
         GpioInit( &ChargeIn, CHARGE_IN, PIN_INPUT, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
         GpioSetInterrupt( &ChargeIn, IRQ_RISING_FALLING_EDGE, IRQ_VERY_LOW_PRIORITY, OnChargeStatusChanged );
+
+        GpioInit( &ioPin, ADC_VBAT, PIN_ANALOGIC, PIN_PUSH_PULL, PIN_NO_PULL, 0 );
 
         SystemClockConfig( );
 
@@ -307,7 +326,19 @@ void BoardGetUniqueId( uint8_t *id )
 
 uint16_t BoardBatteryMeasureVoltage( void )
 {
-    return 0;
+    uint16_t vref;
+    uint16_t vdda;
+    uint16_t vdiv;
+    float batteryVoltage;
+
+    vdiv = AdcReadChannel( &Adc, ADC_CHANNEL_8 );
+    vref = AdcReadChannel( &Adc, ADC_CHANNEL_VREFINT );
+    vdda = ( float )VDDA_VREFINT_CAL * ( float )VREFINT_CAL / ( float )vref;
+
+    batteryVoltage = (float ) vdda * ( ( float )vdiv / ( float )ADC_MAX_VALUE );
+    batteryVoltage = (batteryVoltage * 1.6) / 0.6;
+    
+    return ( uint16_t )batteryVoltage;
 }
 
 uint32_t BoardGetBatteryVoltage( void )
